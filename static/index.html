@@ -131,7 +131,7 @@ async function editor(){
     h+=`<label class="w">Custom fields (one per line, NAME=value)<textarea data-k="__custom" rows="3">${esc(Object.entries(one.custom).map(([a,b])=>a+'='+b).join('\n'))}</textarea></label>
     <details><summary>All frames in this file (${one.frames.length})</summary><table>${one.frames.map(f=>`<tr><td><b>${f.id}</b></td><td>${esc(f.text)}</td></tr>`).join('')}</table></details>`;
   }
-  h+=`<button class="b" id="wipe">Clear comment, lyrics &amp; custom fields</button><button class="b p" id="save" disabled>Save changes</button>`;
+  h+=`<button class="b" id="ren">Rename file to Track - Artist - Title</button><button class="b" id="wipe">Clear comment, lyrics &amp; custom fields</button><button class="b p" id="save" disabled>Save changes</button>`;
   ed.innerHTML=h;bindEditor(paths,multi);setCover(paths[0]);
 }
 function setCover(p){
@@ -156,6 +156,19 @@ function bindEditor(paths,multi){
       toast(`Saved ${paths.length} file${paths.length>1?'s':''}`);const keep=new Set(sel);
       await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
     }catch(e){toast(e.message,1);save.disabled=false}
+  };
+  $('#ren').onclick=async()=>{
+    if(dirty.size)return toast('Save your changes first, then rename',1);
+    try{
+      const plan=await post('/api/rename',{paths,dry:true});
+      const ok=plan.filter(r=>r.status==='ok'),skipped=plan.filter(r=>r.status!=='ok'&&r.status!=='unchanged');
+      if(!ok.length)return toast(skipped.length?`Nothing renamed: ${skipped[0].status}`:'File names already match',1);
+      const base=p=>p.split('/').pop();
+      if(!confirm(`Rename ${ok.length} file${ok.length>1?'s':''}?\n\n${base(ok[0].old)}\n-> ${base(ok[0].new)}`+(skipped.length?`\n\n${skipped.length} will be skipped (missing track, artist or title, or the name already exists).`:'')))return;
+      const res=await post('/api/rename',{paths});
+      await go(cwd);res.forEach(r=>sel.add(r.new));refreshRows();editor();
+      toast(`Renamed ${res.filter(r=>r.status==='ok').length} file(s)`);
+    }catch(e){toast(e.message,1)}
   };
   $('#wipe').onclick=async()=>{
     if(!confirm(`Clear comment, lyrics and custom fields on ${paths.length} file${paths.length>1?'s':''}? This can't be undone.`))return;
