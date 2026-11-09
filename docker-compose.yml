@@ -1,0 +1,23 @@
+services:
+  mp3-tagger:
+    image: ghcr.io/YOUR_GITHUB_USER/mp3-tagger:latest
+    container_name: mp3-tagger
+    restart: unless-stopped
+    user: "568:568"          # must match the uid/gid below (or your dataset owner)
+    ports:
+      - "8080:8080"
+    environment:
+      MUSIC_DIR: /music
+    volumes:
+      - music:/music
+      # Option B: if the files live on this TrueNAS box, delete the 'music'
+      # volume and use a bind mount instead:
+      # - /mnt/YOURPOOL/music:/music
+
+volumes:
+  music:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: //192.168.1.50/Music      # use the server's IP, not its hostname
+      o: "addr=192.168.1.50,username=SMBUSER,password=SMBPASS,uid=568,gid=568,file_mode=0664,dir_mode=0775,vers=3.0"

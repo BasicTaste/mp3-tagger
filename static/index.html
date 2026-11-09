@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MP3 Tagger</title>
+<style>
+:root{--bg:#e9ecf0;--panel:#fff;--ink:#1b2230;--mute:#667085;--line:#d5dae2;--acc:#1f4fd8;--accink:#fff;--sel:#e3ebff;--bad:#b42318;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#12161d;--panel:#1a2029;--ink:#e6e9ef;--mute:#94a0b4;--line:#2b3340;--acc:#7da2ff;--accink:#0d1426;--sel:#222d47;--bad:#ff8a80;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;height:100vh;display:flex;flex-direction:column}
+header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+h1{font-size:16px;margin:0;font-weight:650}
+#crumbs button{background:none;border:0;color:var(--acc);cursor:pointer;padding:2px 4px;font:inherit}
+#crumbs span{color:var(--mute)}
+main{flex:1;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(340px,1fr);gap:12px;padding:12px;min-height:0}
+@media(max-width:900px){main{grid-template-columns:1fr;overflow:auto}body{height:auto}}
+section,aside{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:auto;min-height:0}
+.bar{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+.bar .mute{margin-left:auto}
+table{width:100%;border-collapse:collapse}
+td,th{padding:6px 10px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+th{color:var(--mute);font-weight:500;border-bottom:1px solid var(--line)}
+tr.f{cursor:pointer}tr.f:hover{background:var(--bg)}tr.f.on{background:var(--sel)}
+tr.d td{color:var(--acc);cursor:pointer;font-weight:500}
+.mute{color:var(--mute)}
+button,input,textarea{font:inherit;color:inherit}
+button.b{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button.b:hover{border-color:var(--acc)}
+button.p{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+button.p:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+#ed{padding:14px;display:flex;flex-direction:column;gap:12px}
+.cv{display:flex;gap:14px;align-items:flex-start}
+#cover{width:140px;height:140px;border:1px dashed var(--line);border-radius:6px;display:grid;place-items:center;text-align:center;color:var(--mute);overflow:hidden;flex:none;font-size:12px;padding:6px}
+#cover.drag{border-color:var(--acc);background:var(--sel)}
+#cover img{width:100%;height:100%;object-fit:cover;display:block;margin:-6px}
+.cv .col{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{display:flex;flex-direction:column;gap:3px;color:var(--mute);font-size:13px}
+label.w{grid-column:1/-1}
+input[type=text],textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;color:var(--ink);width:100%}
+input.dirty,textarea.dirty{border-color:var(--acc)}
+textarea{resize:vertical;min-height:60px}
+details{border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+summary{cursor:pointer;color:var(--mute)}
+details table td{padding:2px 6px;font-size:12px;max-width:none;white-space:normal}
+.chk{flex-direction:row;align-items:center;gap:8px;color:var(--ink)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}#toast.err{background:var(--bad);color:#fff}
+.empty{padding:40px 20px;text-align:center;color:var(--mute)}
+</style>
+</head>
+<body>
+<header><h1>MP3 Tagger</h1><nav id="crumbs"></nav></header>
+<main>
+<section>
+  <div class="bar"><button class="b" id="all">Select all</button><button class="b" id="none">Clear</button><span class="mute" id="count"></span></div>
+  <table><thead><tr><th></th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th>File</th></tr></thead><tbody id="rows"></tbody></table>
+</section>
+<aside><div id="ed"><div class="empty">Select one or more files to edit their tags.<br>Click to toggle, Shift-click for a range.</div></div></aside>
+</main>
+<div id="toast"></div>
+<script>
+const FIELDS=[['title','Title','w'],['artist','Artist'],['albumartist','Album artist'],['album','Album','w'],['date','Year / date'],['genre','Genre'],['track','Track'],['disc','Disc'],['composer','Composer'],['bpm','BPM'],['grouping','Grouping'],['publisher','Publisher']];
+const $=s=>document.querySelector(s);
+let cwd='',files=[],sel=new Set(),last=null,dirty=new Set(),tags=[];
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(m,err){const t=$('#toast');t.textContent=m;t.className='show'+(err?' err':'');clearTimeout(toast.h);toast.h=setTimeout(()=>t.className='',2800)}
+async function api(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.text()).replace(/<[^>]+>/g,'').trim().slice(0,160)||r.status);return r.json()}
+const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+
+async function go(path){
+  try{const d=await api('/api/list?path='+encodeURIComponent(path));
+    cwd=d.path;files=d.files;sel.clear();last=null;renderList(d.dirs);editor();
+  }catch(e){toast(e.message,1)}
+}
+function crumbs(){
+  const parts=cwd?cwd.split('/'):[];let acc='';
+  $('#crumbs').innerHTML='<button data-p="">Music</button>'+parts.map(p=>{acc+=(acc?'/':'')+p;return `<span>/</span><button data-p="${esc(acc)}">${esc(p)}</button>`}).join('');
+}
+$('#crumbs').onclick=e=>{if(e.target.dataset.p!==undefined)go(e.target.dataset.p)};
+function renderList(dirs){
+  crumbs();
+  let h='';
+  if(cwd)h+=`<tr class="d" data-p="${esc(cwd.split('/').slice(0,-1).join('/'))}"><td></td><td colspan="5">..</td></tr>`;
+  (dirs||[]).forEach(d=>h+=`<tr class="d" data-p="${esc(d.path)}"><td></td><td colspan="5">${esc(d.name)}/</td></tr>`);
+  files.forEach((f,i)=>h+=`<tr class="f ${sel.has(f.path)?'on':''}" data-i="${i}"><td><input type="checkbox" ${sel.has(f.path)?'checked':''} tabindex="-1"></td><td>${esc(f.track)}</td><td>${esc(f.title)}</td><td>${esc(f.artist)}</td><td>${esc(f.album)}</td><td class="mute">${esc(f.name)}</td></tr>`);
+  if(!h)h='<tr><td colspan="6" class="empty">No folders or MP3 files here.</td></tr>';
+  $('#rows').innerHTML=h;
+  $('#count').textContent=files.length?`${sel.size} of ${files.length} selected`:'';
+}
+let dirsCache=[];
+$('#rows').onclick=e=>{
+  const tr=e.target.closest('tr');if(!tr)return;
+  if(tr.classList.contains('d'))return go(tr.dataset.p);
+  const i=+tr.dataset.i,p=files[i].path;
+  if(e.shiftKey&&last!==null){const [a,b]=[Math.min(last,i),Math.max(last,i)];for(let k=a;k<=b;k++)sel.add(files[k].path)}
+  else{sel.has(p)?sel.delete(p):sel.add(p)}
+  last=i;refreshRows();editor();
+};
+function refreshRows(){
+  document.querySelectorAll('#rows tr.f').forEach(tr=>{const on=sel.has(files[+tr.dataset.i].path);tr.classList.toggle('on',on);tr.querySelector('input').checked=on});
+  $('#count').textContent=`${sel.size} of ${files.length} selected`;
+}
+$('#all').onclick=()=>{files.forEach(f=>sel.add(f.path));refreshRows();editor()};
+$('#none').onclick=()=>{sel.clear();refreshRows();editor()};
+
+function selPaths(){return files.filter(f=>sel.has(f.path)).map(f=>f.path)}
+async function editor(){
+  const paths=selPaths(),ed=$('#ed');dirty.clear();
+  if(!paths.length){ed.innerHTML='<div class="empty">Select one or more files to edit their tags.<br>Click to toggle, Shift-click for a range.</div>';return}
+  try{tags=await post('/api/tags/read',{paths})}catch(e){return toast(e.message,1)}
+  const multi=paths.length>1,one=tags[0];
+  const val=k=>{const s=new Set(tags.map(t=>t[k]));return s.size===1?[...s][0]:null};
+  const inp=(k,l,c)=>{const v=val(k);return `<label class="${c||''}">${l}<input type="text" data-k="${k}" value="${esc(v??'')}" placeholder="${v===null?'Different in each file':''}"></label>`};
+  let h=`<div class="cv"><div id="cover" tabindex="0"></div><div class="col">
+    <strong>${multi?paths.length+' files selected':esc(files.find(f=>f.path===paths[0]).name)}</strong>
+    ${multi?'':`<span class="mute">${one.info.length?Math.floor(one.info.length/60)+':'+String(one.info.length%60).padStart(2,'0'):''} ${one.info.bitrate?'· '+one.info.bitrate+' kbps':''}</span>`}
+    <button class="b" id="pick">Choose cover…</button><button class="b" id="rmcov">Remove cover</button>
+    <input type="file" id="file" accept="image/jpeg,image/png" hidden></div></div>
+  <div class="grid">${FIELDS.map(f=>inp(...f)).join('')}
+  <label class="w">Comment<textarea data-k="comment" placeholder="${val('comment')===null?'Different in each file':''}">${esc(val('comment')??'')}</textarea></label>
+  <label class="w">Lyrics<textarea data-k="lyrics" rows="4" placeholder="${val('lyrics')===null?'Different in each file':''}">${esc(val('lyrics')??'')}</textarea></label></div>`;
+  if(multi)h+=`<label class="chk"><input type="checkbox" id="auto"> Number tracks 1–${paths.length} in list order</label>
+    <div class="mute">Only fields you change are written. Blank and changed clears that tag on every selected file.</div>`;
+  else{
+    h+=`<label class="w">Custom fields (one per line, NAME=value)<textarea data-k="__custom" rows="3">${esc(Object.entries(one.custom).map(([a,b])=>a+'='+b).join('\n'))}</textarea></label>
+    <details><summary>All frames in this file (${one.frames.length})</summary><table>${one.frames.map(f=>`<tr><td><b>${f.id}</b></td><td>${esc(f.text)}</td></tr>`).join('')}</table></details>`;
+  }
+  h+=`<button class="b p" id="save" disabled>Save changes</button>`;
+  ed.innerHTML=h;bindEditor(paths,multi);setCover(paths[0]);
+}
+function setCover(p){
+  const c=$('#cover');if(!c)return;
+  if(tags.some(t=>t.has_cover)){
+    const img=new Image();img.alt='Album cover';img.onload=()=>{c.innerHTML='';c.append(img)};
+    img.onerror=()=>c.textContent='No cover';
+    img.src='/api/cover?path='+encodeURIComponent(selPaths().find((_,i)=>tags[i].has_cover))+'&t='+Date.now();
+  }else c.textContent='No cover. Drop an image here';
+}
+function bindEditor(paths,multi){
+  const save=$('#save');
+  $('#ed').oninput=e=>{const k=e.target.dataset.k;if(!k)return;dirty.add(k);e.target.classList.add('dirty');save.disabled=false};
+  const auto=$('#auto');if(auto)auto.onchange=()=>{save.disabled=!(dirty.size||auto.checked)};
+  save.onclick=async()=>{
+    const fields={};let custom;
+    dirty.forEach(k=>{const v=document.querySelector(`[data-k="${k}"]`).value;
+      if(k==='__custom'){custom={};v.split('\n').forEach(l=>{const i=l.indexOf('=');if(i>0)custom[l.slice(0,i).trim()]=l.slice(i+1).trim()})}
+      else fields[k]=v.trim()});
+    save.disabled=true;
+    try{await post('/api/tags',{paths,fields,custom,autonumber:!!(auto&&auto.checked)});
+      toast(`Saved ${paths.length} file${paths.length>1?'s':''}`);const keep=new Set(sel);
+      await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
+    }catch(e){toast(e.message,1);save.disabled=false}
+  };
+  const upload=async f=>{
+    if(!f)return;
+    if(paths.length>1&&!confirm(`Set this cover on ${paths.length} files?`))return;
+    const fd=new FormData();fd.append('paths',JSON.stringify(paths));if(f!=='remove')fd.append('image',f);
+    try{await api('/api/cover',{method:'POST',body:fd});toast(f==='remove'?'Cover removed':'Cover saved');
+      const keep=new Set(sel);await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
+    }catch(e){toast(e.message,1)}
+  };
+  $('#pick').onclick=()=>$('#file').click();
+  $('#file').onchange=e=>upload(e.target.files[0]);
+  $('#rmcov').onclick=()=>{if(confirm(`Remove cover from ${paths.length} file${paths.length>1?'s':''}?`))upload('remove')};
+  const c=$('#cover');
+  c.ondragover=e=>{e.preventDefault();c.classList.add('drag')};
+  c.ondragleave=()=>c.classList.remove('drag');
+  c.ondrop=e=>{e.preventDefault();c.classList.remove('drag');upload(e.dataTransfer.files[0])};
+}
+go('');
+</script>
+</body>
+</html>
