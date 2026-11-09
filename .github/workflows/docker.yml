@@ -2,6 +2,7 @@ name: Build image
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
   packages: write
@@ -19,4 +20,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/mp3-tagger:latest
+          tags: ghcr.io/basictaste/mp3-tagger:latest
