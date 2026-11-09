@@ -1,4 +1,5 @@
 import os
+import re
 import mutagen.id3 as id3
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from mutagen.id3 import ID3, ID3NoHeaderError, APIC, COMM, USLT, TXXX
@@ -152,3 +153,50 @@ def set_cover():
             t.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
         t.save(p, v2_version=4)
     return jsonify(ok=True, count=len(paths))
+
+
+BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", BAD.sub("_", s)).strip(" .")
+
+
+def plan_name(p):
+    t = load(p)
+
+    def first(f):
+        return ", ".join(t[f].text).strip() if f in t else ""
+
+    title, artist = first("TIT2"), first("TPE1")
+    track = first("TRCK").split("/")[0].strip()
+    if not (title and artist and track):
+        return None
+    if track.isdigit():
+        track = track.zfill(2)
+    return clean(f"{track} - {artist} - {title}")[:200].rstrip(" .") + ".mp3"
+
+
+@app.post("/api/rename")
+def rename_files():
+    j = request.get_json()
+    dry = j.get("dry", False)
+    out, taken = [], set()
+    for rel in j["paths"]:
+        p = safe(rel)
+        name = plan_name(p)
+        if not name:
+            out.append({"old": rel, "new": rel, "status": "missing track, artist or title"})
+            continue
+        dst = os.path.join(os.path.dirname(p), name)
+        if dst == p:
+            status = "unchanged"
+        elif os.path.exists(dst) or dst in taken:
+            status = "name already exists"
+        else:
+            taken.add(dst)
+            if not dry:
+                os.rename(p, dst)
+            status = "ok"
+        out.append({"old": rel, "new": relpath(dst) if status == "ok" else rel, "status": status})
+    return jsonify(out)
