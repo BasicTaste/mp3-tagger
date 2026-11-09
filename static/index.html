@@ -55,16 +55,16 @@ details table td{padding:2px 6px;font-size:12px;max-width:none;white-space:norma
 <header><h1>MP3 Tagger</h1><nav id="crumbs"></nav></header>
 <main>
 <section>
-  <div class="bar"><button class="b" id="all">Select all</button><button class="b" id="none">Clear</button><span class="mute" id="count"></span></div>
+  <div class="bar"><label class="chk"><input type="checkbox" id="multi"> Select multiple</label><button class="b" id="all" hidden>Select all</button><button class="b" id="none" hidden>Deselect all</button><span class="mute" id="count"></span></div>
   <table><thead><tr><th></th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th>File</th></tr></thead><tbody id="rows"></tbody></table>
 </section>
-<aside><div id="ed"><div class="empty">Select one or more files to edit their tags.<br>Click to toggle, Shift-click for a range.</div></div></aside>
+<aside><div id="ed"><div class="empty">Select one or more files to edit their tags.<br>Turn on Select multiple to pick several.</div></div></aside>
 </main>
 <div id="toast"></div>
 <script>
 const FIELDS=[['title','Title','w'],['artist','Artist'],['albumartist','Album artist'],['album','Album','w'],['date','Year / date'],['genre','Genre'],['track','Track'],['disc','Disc'],['composer','Composer'],['bpm','BPM'],['grouping','Grouping'],['publisher','Publisher']];
 const $=s=>document.querySelector(s);
-let cwd='',files=[],sel=new Set(),last=null,dirty=new Set(),tags=[];
+let multi=false,cwd='',files=[],sel=new Set(),last=null,dirty=new Set(),tags=[];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(m,err){const t=$('#toast');t.textContent=m;t.className='show'+(err?' err':'');clearTimeout(toast.h);toast.h=setTimeout(()=>t.className='',2800)}
 async function api(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.text()).replace(/<[^>]+>/g,'').trim().slice(0,160)||r.status);return r.json()}
@@ -95,7 +95,8 @@ $('#rows').onclick=e=>{
   const tr=e.target.closest('tr');if(!tr)return;
   if(tr.classList.contains('d'))return go(tr.dataset.p);
   const i=+tr.dataset.i,p=files[i].path;
-  if(e.shiftKey&&last!==null){const [a,b]=[Math.min(last,i),Math.max(last,i)];for(let k=a;k<=b;k++)sel.add(files[k].path)}
+  if(!multi){const only=sel.size===1&&sel.has(p);sel.clear();if(!only)sel.add(p)}
+  else if(e.shiftKey&&last!==null){const [a,b]=[Math.min(last,i),Math.max(last,i)];for(let k=a;k<=b;k++)sel.add(files[k].path)}
   else{sel.has(p)?sel.delete(p):sel.add(p)}
   last=i;refreshRows();editor();
 };
@@ -103,13 +104,15 @@ function refreshRows(){
   document.querySelectorAll('#rows tr.f').forEach(tr=>{const on=sel.has(files[+tr.dataset.i].path);tr.classList.toggle('on',on);tr.querySelector('input').checked=on});
   $('#count').textContent=`${sel.size} of ${files.length} selected`;
 }
+$('#multi').onchange=e=>{multi=e.target.checked;$('#all').hidden=$('#none').hidden=!multi;
+  if(!multi&&sel.size>1){const f=selPaths()[0];sel.clear();sel.add(f);refreshRows();editor()}};
 $('#all').onclick=()=>{files.forEach(f=>sel.add(f.path));refreshRows();editor()};
 $('#none').onclick=()=>{sel.clear();refreshRows();editor()};
 
 function selPaths(){return files.filter(f=>sel.has(f.path)).map(f=>f.path)}
 async function editor(){
   const paths=selPaths(),ed=$('#ed');dirty.clear();
-  if(!paths.length){ed.innerHTML='<div class="empty">Select one or more files to edit their tags.<br>Click to toggle, Shift-click for a range.</div>';return}
+  if(!paths.length){ed.innerHTML='<div class="empty">Select one or more files to edit their tags.<br>Turn on Select multiple to pick several.</div>';return}
   try{tags=await post('/api/tags/read',{paths})}catch(e){return toast(e.message,1)}
   const multi=paths.length>1,one=tags[0];
   const val=k=>{const s=new Set(tags.map(t=>t[k]));return s.size===1?[...s][0]:null};
@@ -128,7 +131,7 @@ async function editor(){
     h+=`<label class="w">Custom fields (one per line, NAME=value)<textarea data-k="__custom" rows="3">${esc(Object.entries(one.custom).map(([a,b])=>a+'='+b).join('\n'))}</textarea></label>
     <details><summary>All frames in this file (${one.frames.length})</summary><table>${one.frames.map(f=>`<tr><td><b>${f.id}</b></td><td>${esc(f.text)}</td></tr>`).join('')}</table></details>`;
   }
-  h+=`<button class="b p" id="save" disabled>Save changes</button>`;
+  h+=`<button class="b" id="wipe">Clear comment, lyrics &amp; custom fields</button><button class="b p" id="save" disabled>Save changes</button>`;
   ed.innerHTML=h;bindEditor(paths,multi);setCover(paths[0]);
 }
 function setCover(p){
@@ -153,6 +156,12 @@ function bindEditor(paths,multi){
       toast(`Saved ${paths.length} file${paths.length>1?'s':''}`);const keep=new Set(sel);
       await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
     }catch(e){toast(e.message,1);save.disabled=false}
+  };
+  $('#wipe').onclick=async()=>{
+    if(!confirm(`Clear comment, lyrics and custom fields on ${paths.length} file${paths.length>1?'s':''}? This can't be undone.`))return;
+    try{await post('/api/tags',{paths,fields:{comment:'',lyrics:''},custom:{}});toast('Cleared');
+      const keep=new Set(sel);await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
+    }catch(e){toast(e.message,1)}
   };
   const upload=async f=>{
     if(!f)return;
