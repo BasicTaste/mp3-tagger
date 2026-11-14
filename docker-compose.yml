@@ -8,6 +8,7 @@ services:
       - "8080:8080"
     environment:
       MUSIC_DIR: /music
+      MB_USER_AGENT: "MP3Tagger/1.0 (you@example.com)"
     volumes:
       - music:/music
       # Option B: if the files live on this TrueNAS box, delete the 'music'
