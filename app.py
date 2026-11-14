@@ -5,6 +5,9 @@ from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from mutagen.id3 import ID3, ID3NoHeaderError, APIC, COMM, USLT, TXXX
 from mutagen.mp3 import MP3
 import io
+import time
+import threading
+import requests
 
 ROOT = os.path.realpath(os.environ.get("MUSIC_DIR", "/music"))
 app = Flask(__name__, static_folder="static")
@@ -200,3 +203,106 @@ def rename_files():
             status = "ok"
         out.append({"old": rel, "new": relpath(dst) if status == "ok" else rel, "status": status})
     return jsonify(out)
+
+
+# ---------- MusicBrainz lookup ----------
+MB = "https://musicbrainz.org/ws/2"
+MB_HEADERS = {"User-Agent": os.environ.get("MB_USER_AGENT", "MP3Tagger/1.0 (you@example.com)")}
+_mb_lock, _mb_last = threading.Lock(), 0.0
+
+
+def mb_get(path, **params):
+    """GET from MusicBrainz, at most one request per ~1.1 s as their rules require."""
+    global _mb_last
+    with _mb_lock:
+        wait = 1.1 - (time.time() - _mb_last)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            r = requests.get(f"{MB}/{path}", params={**params, "fmt": "json"}, headers=MB_HEADERS, timeout=10)
+        finally:
+            _mb_last = time.time()
+    r.raise_for_status()
+    return r.json()
+
+
+def lq(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def credit(ac):
+    return "".join(c["name"] + c.get("joinphrase", "") for c in ac)
+
+
+def search_recordings(title, artist, album=""):
+    q = f'recording:"{lq(title)}" AND artist:"{lq(artist)}"'
+    if album:
+        q += f' AND release:"{lq(album)}"'
+    return mb_get("recording", query=q, limit=15).get("recordings", [])
+
+
+@app.post("/api/lookup")
+def lookup():
+    j = request.get_json()
+    title, artist, album = (j.get(k, "").strip() for k in ("title", "artist", "album"))
+    if not (title and artist):
+        abort(400, "Title and artist are required")
+    recs = search_recordings(title, artist, album) if album else []
+    if not any(r.get("score", 0) >= 85 for r in recs):
+        recs = search_recordings(title, artist)  # album tag may not match MusicBrainz's spelling
+    out = []
+    for rec in recs:
+        if rec.get("score", 0) < 85:
+            continue
+        for rel in rec.get("releases", []):
+            rg = rel.get("release-group", {})
+            media = (rel.get("media") or [{}])[0]
+            trk = (media.get("track") or [{}])[0]
+            num, total = trk.get("number", ""), rel.get("track-count") or media.get("track-count")
+            out.append({
+                "release_id": rel["id"],
+                "album": rel["title"],
+                "albumartist": credit(rel.get("artist-credit", rec["artist-credit"])),
+                "date": rel.get("date", ""),
+                "track": f"{num}/{total}" if num.isdigit() and total else (num if num.isdigit() else ""),
+                "disc": str(media.get("position", "")),
+                "country": rel.get("country", ""),
+                # official studio albums first, then earliest
+                "_rank": (
+                    rel.get("status") != "Official",
+                    not (rg.get("primary-type") == "Album" and not rg.get("secondary-types")),
+                    rel.get("date") or "9999",
+                ),
+            })
+    out.sort(key=lambda r: r["_rank"])
+    for r in out:
+        del r["_rank"]
+    return jsonify(out[: int(j.get("n", 10))])
+
+
+@app.get("/api/lookup/release")
+def lookup_release():
+    d = mb_get(f"release/{request.args['id']}", inc="labels+genres+release-groups")
+    labels = [li["label"]["name"] for li in d.get("label-info", []) if li.get("label")]
+    genres = sorted(d.get("genres") or d.get("release-group", {}).get("genres") or [], key=lambda g: -g.get("count", 0))
+    return jsonify(publisher=labels[0] if labels else "", genre=genres[0]["name"].title() if genres else "")
+
+
+@app.post("/api/tags/fill")
+def fill_tags():
+    """Write only fields that are currently empty. items: [{path, fields}]"""
+    n = 0
+    for it in request.get_json()["items"]:
+        p = safe(it["path"])
+        t = load(p)
+        changed = False
+        for k, v in it["fields"].items():
+            f = TEXT.get(k)
+            if f and v and not any(str(x).strip() for x in t.getall(f)):
+                t.delall(f)
+                t.add(getattr(id3, f)(encoding=3, text=[v]))
+                changed = True
+        if changed:
+            t.save(p, v2_version=4)
+            n += 1
+    return jsonify(ok=True, count=n)
