@@ -131,6 +131,7 @@ async function editor(){
     h+=`<label class="w">Custom fields (one per line, NAME=value)<textarea data-k="__custom" rows="3">${esc(Object.entries(one.custom).map(([a,b])=>a+'='+b).join('\n'))}</textarea></label>
     <details><summary>All frames in this file (${one.frames.length})</summary><table>${one.frames.map(f=>`<tr><td><b>${f.id}</b></td><td>${esc(f.text)}</td></tr>`).join('')}</table></details>`;
   }
+  h+=`<button class="b" id="mb">Fill empty fields from MusicBrainz</button><div id="mb-res"></div>`;
   h+=`<button class="b" id="ren">Rename file to Track - Artist - Title</button><button class="b" id="wipe">Clear comment, lyrics &amp; custom fields</button><button class="b p" id="save" disabled>Save changes</button>`;
   ed.innerHTML=h;bindEditor(paths,multi);setCover(paths[0]);
 }
@@ -191,6 +192,52 @@ function bindEditor(paths,multi){
   c.ondragover=e=>{e.preventDefault();c.classList.add('drag')};
   c.ondragleave=()=>c.classList.remove('drag');
   c.ondrop=e=>{e.preventDefault();c.classList.remove('drag');upload(e.dataTransfer.files[0])};
+
+  const mb=$('#mb'),box=$('#mb-res'),info={},FILL=['album','albumartist','date','track','disc','genre','publisher'];
+  const sty='background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%';
+  mb.onclick=async()=>{
+    if(dirty.size)return toast('Save your changes first, then look up',1);
+    let stop=false;const rows=[];mb.disabled=true;
+    box.innerHTML='<div class="mute"><span id="mbp"></span> <button class="b" id="mbx">Cancel</button></div>';
+    $('#mbx').onclick=()=>{stop=true};
+    for(let i=0;i<paths.length&&!stop;i++){
+      $('#mbp').textContent=`Looking up ${i+1} of ${paths.length}…`;
+      const t=tags[i];let c=[];
+      if(t.title&&t.artist)try{c=await post('/api/lookup',{title:t.title,artist:t.artist,album:t.album,n:30})}catch(e){}
+      rows.push(c);
+    }
+    mb.disabled=false;
+    if(stop){box.innerHTML='';return}
+    review(rows);
+  };
+  function review(rows){
+    const rel=new Map();
+    rows.forEach((c,i)=>c.forEach((x,r)=>{
+      const e=rel.get(x.release_id)||{x,n:0,rank:0,by:{}};
+      if(!e.by[i]){e.by[i]=x;e.n++;e.rank+=r}
+      rel.set(x.release_id,e)}));
+    const opts=[...rel.values()].sort((a,b)=>b.n-a.n||a.rank/a.n-b.rank/b.n).slice(0,15);
+    if(!opts.length){box.innerHTML='<div class="mute">No good matches found. Check Title and Artist.</div>';return}
+    box.innerHTML=`<label class="w">Release<select id="mbsel" style="${sty}">${opts.map((o,k)=>`<option value="${k}">${esc(o.x.album)} · ${esc(o.x.albumartist)} (${esc(o.x.date)||'?'} ${esc(o.x.country)}) · ${o.n}/${paths.length} files</option>`).join('')}</select></label>
+      <table id="mbtab"></table><button class="b p" id="mbgo">Apply to empty fields</button>`;
+    let plan=[];
+    const draw=async k=>{
+      const o=opts[k],id=o.x.release_id;$('#mbgo').disabled=true;
+      if(!info[id])try{info[id]=await api('/api/lookup/release?id='+id)}catch(e){info[id]={}}
+      plan=paths.map((p,i)=>{const x=o.by[i];if(!x)return{p,none:1,f:{}};
+        const f={};FILL.forEach(key=>{const v=x[key]||info[id][key];if(v&&!tags[i][key])f[key]=v});return{p,f}});
+      $('#mbtab').innerHTML=plan.map(r=>`<tr><td>${esc(files.find(f=>f.path===r.p).name)}</td><td class="mute" style="white-space:normal;max-width:none">${r.none?'No match in this release':Object.keys(r.f).length?Object.entries(r.f).map(([a,b])=>a+': '+esc(b)).join(' · '):'Nothing to fill'}</td></tr>`).join('');
+      $('#mbgo').disabled=!plan.some(r=>Object.keys(r.f).length);
+    };
+    $('#mbsel').onchange=e=>draw(+e.target.value);
+    $('#mbgo').onclick=async()=>{
+      const items=plan.filter(r=>Object.keys(r.f).length).map(r=>({path:r.p,fields:r.f}));
+      try{await post('/api/tags/fill',{items});toast(`Filled ${items.length} file${items.length>1?'s':''}`);
+        const keep=new Set(sel);await go(cwd);keep.forEach(p=>sel.add(p));refreshRows();editor();
+      }catch(e){toast(e.message,1)}
+    };
+    draw(0);
+  }
 }
 go('');
 </script>
