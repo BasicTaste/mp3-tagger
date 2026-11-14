@@ -261,6 +261,8 @@ def lookup():
             num, total = trk.get("number", ""), rel.get("track-count") or media.get("track-count")
             out.append({
                 "release_id": rel["id"],
+                "title": rec["title"],
+                "artist": credit(rec["artist-credit"]),
                 "album": rel["title"],
                 "albumartist": credit(rel.get("artist-credit", rec["artist-credit"])),
                 "date": rel.get("date", ""),
@@ -282,23 +284,36 @@ def lookup():
 
 @app.get("/api/lookup/release")
 def lookup_release():
-    d = mb_get(f"release/{request.args['id']}", inc="labels+genres+release-groups")
-    labels = [li["label"]["name"] for li in d.get("label-info", []) if li.get("label")]
-    genres = sorted(d.get("genres") or d.get("release-group", {}).get("genres") or [], key=lambda g: -g.get("count", 0))
-    return jsonify(publisher=labels[0] if labels else "", genre=genres[0]["name"].title() if genres else "")
+    def top(o):
+        g = sorted(o.get("genres") or [], key=lambda g: -g.get("count", 0))
+        return g[0]["name"].title() if g else ""
+
+    d = mb_get(f"release/{request.args['id']}", inc="genres+release-groups+artist-credits")
+    genre = top(d)
+    # Genres usually live on the release group, then the artist, not the release itself
+    try:
+        if not genre and d.get("release-group"):
+            genre = top(mb_get(f"release-group/{d['release-group']['id']}", inc="genres"))
+        if not genre and d.get("artist-credit"):
+            genre = top(mb_get(f"artist/{d['artist-credit'][0]['artist']['id']}", inc="genres"))
+    except requests.RequestException:
+        pass
+    return jsonify(genre=genre)
 
 
 @app.post("/api/tags/fill")
 def fill_tags():
-    """Write only fields that are currently empty. items: [{path, fields}]"""
+    """Write fields that are empty, or whose key is in `overwrite`. items: [{path, fields}]"""
     n = 0
-    for it in request.get_json()["items"]:
+    j = request.get_json()
+    ow = set(j.get("overwrite", []))
+    for it in j["items"]:
         p = safe(it["path"])
         t = load(p)
         changed = False
         for k, v in it["fields"].items():
             f = TEXT.get(k)
-            if f and v and not any(str(x).strip() for x in t.getall(f)):
+            if f and v and (k in ow or not any(str(x).strip() for x in t.getall(f))):
                 t.delall(f)
                 t.add(getattr(id3, f)(encoding=3, text=[v]))
                 changed = True
